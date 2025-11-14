@@ -1,0 +1,10 @@
+.env/
+credentials.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+venv/
+myfile.xlsx
+token.json
