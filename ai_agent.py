@@ -1,10 +1,3 @@
-# google_sheets_ai_agent_complete.py
-"""
-Complete Google Sheets AI Agent
-Features: Sort, Multi-Sort, Filter, Delete Rows, Remove Duplicates, Add Formulas
-Uses: Gemini LLM + Fuzzy Column Matching + Google Sheets API
-"""
-
 import os
 import json
 from typing import List, Optional, Dict, Any
