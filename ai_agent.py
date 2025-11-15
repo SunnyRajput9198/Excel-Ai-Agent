@@ -13,6 +13,19 @@ load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+COLOR_MAP = {
+    "red":      (1, 0, 0),
+    "green":    (0, 1, 0),
+    "blue":     (0, 0, 1),
+    "yellow":   (1, 1, 0),
+    "orange":   (1, 0.6, 0),
+    "purple":   (0.6, 0, 1),
+    "pink":     (1, 0.6, 0.8),
+    "cyan":     (0, 1, 1),
+    "gray":     (0.6, 0.6, 0.6),
+    "lightblue":(0.7, 0.85, 1),
+}
+
 # -------------------------
 # AUTHENTICATION
 # -------------------------
@@ -84,6 +97,20 @@ REMOVE DUPLICATES:
 
 ADD FORMULA:
 {{"action": "formula", "target_column": "Total", "formula": "=B2+C2+D2"}}
+
+COLOR IF:
+{{"action": "color_if", "column": "Category", "equals": "General", "color": "pink"}}
+
+
+COLOR ROW:
+{{"action": "color_row", "row": 5, "color": "yellow"}}
+
+COLOR COLUMN:
+{{"action": "color_column", "column": "C", "color": "red"}}
+
+COLOR RANGE:
+{{"action": "color_range", "range": "A2:C10", "color": "lightblue"}}
+
 
 Rules:
 - Use EXACT column names from the list
@@ -261,6 +288,83 @@ def add_formula(service, spreadsheet_id: str, sheet_name: str, target_column: st
         valueInputOption="USER_ENTERED",
         body=body
     ).execute()
+    
+    
+def color_range(service, spreadsheet_id: str, sheet_id: int, a1_range: str,
+                red: float, green: float, blue: float):
+    """
+    Color any A1 range. Example: 'A2:C10' or 'B:B' or '2:2'
+    Color values 0.0 to 1.0
+    """
+    body = {
+        "requests": [
+            {
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": None,
+                        "endRowIndex": None,
+                        "startColumnIndex": None,
+                        "endColumnIndex": None,
+                        "a1Range": a1_range
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {
+                                "red": red,
+                                "green": green,
+                                "blue": blue
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.backgroundColor"
+                }
+            }
+        ]
+    }
+
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body=body
+    ).execute()
+
+def color_row(service, spreadsheet_id, sheet_id, row, r, g, b):
+    a1 = f"{row}:{row}"
+    return color_range(service, spreadsheet_id, sheet_id, a1, r, g, b)
+
+def color_column(service, spreadsheet_id, sheet_id, column_letter, r, g, b):
+    a1 = f"{column_letter}:{column_letter}"
+    return color_range(service, spreadsheet_id, sheet_id, a1, r, g, b)
+
+def color_if(service, spreadsheet_id, sheet_id, rows, r, g, b):
+    requests = []
+
+    for row_index in rows:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": row_index,
+                    "endRowIndex": row_index + 1,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {
+                            "red": r,
+                            "green": g,
+                            "blue": b
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.backgroundColor"
+            }
+        })
+
+    body = {"requests": requests}
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=body
+    ).execute()
+
 
 # -------------------------
 # MAIN AGENT CLASS
@@ -422,7 +526,75 @@ class SheetsAIAgent:
                 "formula": instruction["formula"],
                 "response": result
             }
+        # COLOR ROW
+        elif action == "color_row":
+            row = instruction["row"]
+            color = instruction["color"].lower()
+            r, g, b = COLOR_MAP.get(color, (1,1,0))   # default yellow
+            result = color_row(self.service, spreadsheet_id, sheet_id, row, r, g, b)
+            return {
+                "status": "success",
+                "action": "color_row",
+                "row": row,
+                "color": color,
+                "response": result
+            }
+
+# COLOR COLUMN
+        elif action == "color_column":
+            col = instruction["column"]
+            color = instruction["color"].lower()
+            r, g, b = COLOR_MAP.get(color, (1,1,0))
+            result = color_column(self.service, spreadsheet_id, sheet_id, col, r, g, b)
+            return {
+                "status": "success",
+                "action": "color_column",
+                "column": col,
+                "color": color,
+                "response": result
+            }
+
+# COLOR RANGE
+        elif action == "color_range":
+            a1 = instruction["range"]
+            color = instruction["color"].lower()
+            r, g, b = COLOR_MAP.get(color, (1,1,0))
+            result = color_range(self.service, spreadsheet_id, sheet_id, a1, r, g, b)
+            return {
+                "status": "success",
+                "action": "color_range",
+                "range": a1,
+                "color": color,
+                "response": result
+            }
+        elif action == "color_if":
+            target_col = instruction["column"]
+            val = instruction["equals"]
+            color = instruction["color"].lower()
+            r, g, b = COLOR_MAP.get(color, (1, 1, 0))
         
+            col_idx = headers.index(target_col)
+        
+            matching_rows = []
+            for i, row in enumerate(all_vals[1:], start=1):
+                try:
+                    if row[col_idx].strip().lower() == val.lower():
+                        matching_rows.append(i)
+                except:
+                    pass
+        
+            result = color_if(self.service, spreadsheet_id, sheet_id, matching_rows, r, g, b)
+
+            return {
+                "status": "success",
+                "action": "color_if",
+                "column": target_col,
+                "equals": val,
+                "color": color,
+                "rows_colored": matching_rows,
+                "response": result
+            }
+
         else:
             return {"status": "error", "message": f"Unknown action: {action}"}
 
