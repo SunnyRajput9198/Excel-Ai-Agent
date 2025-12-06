@@ -8,10 +8,76 @@ from googleapiclient.discovery import build
 from rapidfuzz import process, fuzz
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
-
+import re
 load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+
+def a1_to_indexes(a1_range: str):
+    """
+    Converts A1 notation like 'A2:C10' into (start_row, end_row, start_col, end_col)
+    Google API uses zero-based indexes.
+    """
+    cell_regex = r"([A-Z]+)([0-9]+)"
+    start, end = a1_range.split(":")
+
+    def col_to_index(col):
+        exp = 0
+        val = 0
+        for char in reversed(col):
+            val += (ord(char) - 64) * (26 ** exp)
+            exp += 1
+        return val - 1
+
+    start_col, start_row = re.match(cell_regex, start).groups()
+    end_col, end_row = re.match(cell_regex, end).groups()
+
+    return (
+        int(start_row)-1,
+        int(end_row),
+        col_to_index(start_col),
+        col_to_index(end_col)
+    )
+
+def color_multi(service, spreadsheet_id, sheet_id, all_vals, headers, rules):
+    requests = []
+
+    for rule in rules:
+        col_name = rule["column"]
+        value = rule["equals"]
+        color = rule["color"].lower()
+        r, g, b = COLOR_MAP.get(color, (1, 1, 0))
+
+        col_idx = headers.index(col_name)
+
+        for row_index, row in enumerate(all_vals[1:], start=1):
+            try:
+                if row[col_idx].strip().lower() == value.lower():
+                    requests.append({
+                        "repeatCell": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": row_index,
+                                "endRowIndex": row_index + 1
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": {"red": r, "green": g, "blue": b}
+                                }
+                            },
+                            "fields": "userEnteredFormat.backgroundColor"
+                        }
+                    })
+            except:
+                pass
+
+    body = {"requests": requests}
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body=body
+    ).execute()
+
 
 COLOR_MAP = {
     "red":      (1, 0, 0),
@@ -98,8 +164,25 @@ REMOVE DUPLICATES:
 ADD FORMULA:
 {{"action": "formula", "target_column": "Total", "formula": "=B2+C2+D2"}}
 
-COLOR IF:
-{{"action": "color_if", "column": "Category", "equals": "General", "color": "pink"}}
+COLOR MULTI:
+{{"action": "color_multi", 
+ "rules": [
+    {{"column": "Category", "equals": "General", "color": "yellow"}},
+    {{"column": "Category", "equals": "EWS", "color": "red"}},
+    {{"column": "Category", "equals": "OBC", "color": "blue"}}
+ ]}}
+ 
+ADD COLUMN:
+{{"action": "add_column", "column_name": "NewColumn", "position": 3}}
+
+DELETE COLUMN:
+{{"action": "delete_column", "column": "Category"}}
+
+ADD ROW:
+{{"action": "add_row", "position": 10}}
+
+DELETE ROW:
+{{"action": "delete_row", "row": 5}}
 
 
 COLOR ROW:
@@ -132,6 +215,84 @@ Rules:
         return json.loads(raw)
     except Exception as e:
         return {"_raw": raw, "_error": str(e)}
+
+
+
+def add_column(service, spreadsheet_id: str, sheet_id: int, index: int):
+    body = {
+        "requests": [
+            {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": index,
+                        "endIndex": index + 1
+                    },
+                    "inheritFromBefore": True
+                }
+            }
+        ]
+    }
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body=body
+    ).execute()
+def delete_column(service, spreadsheet_id: str, sheet_id: int, index: int):
+    body = {
+        "requests": [
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "COLUMNS",
+                        "startIndex": index,
+                        "endIndex": index + 1
+                    }
+                }
+            }
+        ]
+    }
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body=body
+    ).execute()
+def add_row(service, spreadsheet_id: str, sheet_id: int, index: int):
+    body = {
+        "requests": [
+            {
+                "insertDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": index,
+                        "endIndex": index + 1
+                    },
+                    "inheritFromBefore": True
+                }
+            }
+        ]
+    }
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body=body
+    ).execute()
+
+def delete_row(service, spreadsheet_id: str, sheet_id: int, index: int):
+    body = {
+        "requests": [
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "dimension": "ROWS",
+                        "startIndex": index,
+                        "endIndex": index + 1
+                    }
+                }
+            }
+        ]
+    }
+    return service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body=body
+    ).execute()
 
 # -------------------------
 # FUZZY MATCHING
@@ -290,31 +451,23 @@ def add_formula(service, spreadsheet_id: str, sheet_name: str, target_column: st
     ).execute()
     
     
-def color_range(service, spreadsheet_id: str, sheet_id: int, a1_range: str,
-                red: float, green: float, blue: float):
-    """
-    Color any A1 range. Example: 'A2:C10' or 'B:B' or '2:2'
-    Color values 0.0 to 1.0
-    """
+def color_range(service, spreadsheet_id, sheet_id, a1_range, red, green, blue):
+    start_row, end_row, start_col, end_col = a1_to_indexes(a1_range)
+
     body = {
         "requests": [
             {
                 "repeatCell": {
                     "range": {
                         "sheetId": sheet_id,
-                        "startRowIndex": None,
-                        "endRowIndex": None,
-                        "startColumnIndex": None,
-                        "endColumnIndex": None,
-                        "a1Range": a1_range
+                        "startRowIndex": start_row,
+                        "endRowIndex": end_row,
+                        "startColumnIndex": start_col,
+                        "endColumnIndex": end_col
                     },
                     "cell": {
                         "userEnteredFormat": {
-                            "backgroundColor": {
-                                "red": red,
-                                "green": green,
-                                "blue": blue
-                            }
+                            "backgroundColor": {"red": red, "green": green, "blue": blue}
                         }
                     },
                     "fields": "userEnteredFormat.backgroundColor"
@@ -593,6 +746,76 @@ class SheetsAIAgent:
                 "equals": val,
                 "color": color,
                 "rows_colored": matching_rows,
+                "response": result
+            }
+        elif action == "color_multi":
+            result = color_multi(
+                self.service, spreadsheet_id, sheet_id,
+                all_vals, headers, instruction["rules"]
+            )
+            return {
+                "status": "success",
+                "action": "color_multi",
+                "rules": instruction["rules"],
+                "response": result
+            }
+        elif action == "add_column":
+            col_name = instruction["column_name"]
+            pos = instruction["position"]
+
+            # Insert the column
+            result = add_column(self.service, spreadsheet_id, sheet_id, pos)
+
+            # Rename column cell (header row)
+            update_body = {
+                "values": [[col_name]]
+            }
+            self.service.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=f"{sheet_name}!{chr(65 + pos)}{header_row}",
+                valueInputOption="USER_ENTERED",
+                body=update_body
+            ).execute()
+
+            return {
+                "status": "success",
+                "action": "add_column",
+                "column_name": col_name,
+                "position": pos,
+                "response": result
+            }
+        elif action == "delete_column":
+            col_name = instruction["column"]
+            index = headers.index(col_name)
+
+            result = delete_column(self.service, spreadsheet_id, sheet_id, index)
+
+            return {
+                "status": "success",
+                "action": "delete_column",
+                "column": col_name,
+                "response": result
+            }
+        elif action == "add_row":
+            pos = instruction["position"]
+
+            result = add_row(self.service, spreadsheet_id, sheet_id, pos)
+
+            return {
+                "status": "success",
+                "action": "add_row",
+                "position": pos,
+                "response": result
+            }
+        elif action == "delete_row":
+            row = instruction["row"]
+
+            result = delete_row(self.service, spreadsheet_id, sheet_id, row)
+
+            return {
+                "status": "success",
+                "action": "delete_row",
+                "row": row,
                 "response": result
             }
 
