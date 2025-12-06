@@ -388,7 +388,8 @@ class SheetsAIAgent:
             self.connect()
         
         # Get headers
-        header_a1 = f"{sheet_name}!{header_row}:{header_row}"
+        # Get headers (must use A1 notation, row-only ranges are invalid)
+        header_a1 = f"{sheet_name}!A{header_row}:ZZ{header_row}"
         headers_vals = get_sheet_values(self.service, spreadsheet_id, header_a1)
         if not headers_vals or len(headers_vals) == 0:
             raise RuntimeError("Could not read header row")
