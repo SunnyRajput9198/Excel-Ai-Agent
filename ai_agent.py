@@ -204,7 +204,7 @@ def get_sheet_values(
 # LLM SETUP & PARSING
 # -------------------------
 def setup_llm():
-    return ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 
 def parse_instruction_llm(prompt: str, llm, columns: List[str]) -> Dict[str, Any]:
@@ -220,6 +220,14 @@ SORT:
 
 MULTI-COLUMN SORT:
 {{"action": "multicolumn_sort", "sort": [{{"column": "CGPA", "ascending": false}}, {{"column": "Name", "ascending": true}}]}}
+
+DELETE MULTIPLE COLUMNS:
+{{"action": "delete_columns", "columns": ["Column1", "Column2", "Column3"]}}
+
+If user says "delete columns A, B, C" or "remove multiple columns", return:
+{{"action": "delete_columns", "columns": [...]}}
+
+
 
 FILTER:
 {{"action": "filter", "column": "CGPA", "operator": ">", "value": 8}}
@@ -431,6 +439,12 @@ def ground_columns(
                 sort_spec["column"] = fuzzy_match_column(
                     sort_spec["column"], actual_columns
                 )
+    if instruction.get("action") == "delete_columns":
+        grounded = []
+        for col in instruction["columns"]:
+            grounded.append(fuzzy_match_column(col, actual_columns))
+        instruction["columns"] = grounded
+
 
     # Ground any nested rules that contain "column"
     if "rules" in instruction and isinstance(instruction["rules"], list):
@@ -1417,6 +1431,22 @@ class SheetsAIAgent:
                 "deleted_count": len(delete_indices),
                 "response": result,
             }
+        elif action == "delete_columns":
+            cols = instruction["columns"]
+
+            # Convert names → indexes
+            indexes = sorted([headers.index(c) for c in cols], reverse=True)
+
+            # Delete columns from right → left (avoid index shifts)
+            for idx in indexes:
+                delete_column(self.service, spreadsheet_id, sheet_id, idx)
+
+            return {
+                "status": "success",
+                "action": "delete_columns",
+                "deleted": cols,
+                "response": {"count": len(cols)}
+            }
 
         # REMOVE DUPLICATES
         elif action == "remove_duplicates":
@@ -1639,9 +1669,24 @@ class SheetsAIAgent:
             col_name = instruction["column"]
             old_index = headers.index(col_name)
             new_index = int(instruction["new_position"])
-            result = move_column(
-                self.service, spreadsheet_id, sheet_id, old_index, new_index
-            )
+
+            try:
+                # Try move directly
+                result = move_column(
+                    self.service, spreadsheet_id, sheet_id, old_index, new_index
+                )
+            except HttpError as err:
+                if "merged cell" in str(err):
+                    # Auto-fix → unmerge entire sheet
+                    unmerge_all(self.service, spreadsheet_id, sheet_id)
+
+                    # Try again after unmerging
+                    result = move_column(
+                        self.service, spreadsheet_id, sheet_id, old_index, new_index
+                    )
+                else:
+                    raise err
+
             return {
                 "status": "success",
                 "action": "move_column",
@@ -1650,6 +1695,7 @@ class SheetsAIAgent:
                 "to_index": new_index,
                 "response": result,
             }
+
 
         # RENAME COLUMN
         elif action == "rename_column":
