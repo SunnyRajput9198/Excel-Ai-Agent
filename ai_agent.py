@@ -7,14 +7,78 @@ from googleapiclient.errors import HttpError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from rapidfuzz import process, fuzz
-from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
 import re
 
 load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+# -------------------------
+# LLM SETUP & PARSING (USING HUGGING FACE)
+# -------------------------
+
+# Initialize HF client globally so it's reused
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+hf_client = InferenceClient(
+    "mistralai/Mistral-Nemo-Instruct-2407",
+    token=HF_TOKEN,
+)
+
+
+def setup_llm():
+    import json, re, time
+    from huggingface_hub import InferenceClient
+
+    HF_TOKEN = os.getenv("HF_TOKEN")
+    client = InferenceClient(token=HF_TOKEN)
+
+    MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+
+    class HFWrapper:
+        def invoke(self, prompt):
+            # Convert list prompt → text block
+            if isinstance(prompt, list):
+                p = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in prompt)
+            else:
+                p = prompt
+
+            p += "\n\nReturn ONLY valid JSON. Start with '{' and end with '}'."
+
+            for attempt in range(3):
+                try:
+                    out = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=[{"role": "user", "content": p}],
+                        max_tokens=500,
+                        temperature=0.0
+                    )
+
+                    text = out.choices[0].message["content"].strip()
+
+                    # Try direct JSON
+                    try:
+                        json.loads(text)
+                        return type("Obj", (), {"content": text})
+                    except:
+                        pass
+
+                    # Extract JSON section
+                    match = re.search(r"\{.*\}", text, re.DOTALL)
+                    if match:
+                        return type("Obj", (), {"content": match.group(0)})
+
+                    return type("Obj", (), {"content": "ERROR: Could not parse JSON"})
+
+                except Exception as e:
+                    print("HF ERROR:", e)
+                    time.sleep(0.5)
+
+            return type("Obj", (), {"content": "ERROR: Model failed"})
+
+    return HFWrapper()
 
 def a1_to_indexes(a1_range: str):
     """
@@ -199,19 +263,35 @@ def get_sheet_values(
     )
     return result.get("values", [])
 
-
+ 
 # -------------------------
 # LLM SETUP & PARSING
-# -------------------------
-def setup_llm():
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
+# -----------------------
 
 
 def parse_instruction_llm(prompt: str, llm, columns: List[str]) -> Dict[str, Any]:
     """Parse natural language into structured action using LLM"""
     system_prompt = f"""
 You are an AI instruction parser for Google Sheets.
-Available columns: {columns}
+Available columns: {{columns}}
+
+You can return EITHER:
+
+SINGLE ACTION:
+{{"action": "sort", "column": "Name", "ascending": true}}
+
+OR MULTIPLE ACTIONS:
+{{"actions": [
+    {{"action": "sort", "column": "Name", "ascending": true}},
+    {{"action": "add_column_with_serial", "column_name": "Rank", "position": 0}},
+    {{"action": "color_multi", "rules": [
+        {{"column": "Category", "equals": "OBC", "color": "blue"}}
+    ]}}
+]}}
+
+If the user gives multiple instructions in one message (e.g. "first sort, then add serial, then color"),
+you MUST return an `"actions"` array containing each step as separate action objects.
+
 
 Return STRICT JSON ONLY with one of these formats:
 
@@ -227,6 +307,11 @@ DELETE MULTIPLE COLUMNS:
 If user says "delete columns A, B, C" or "remove multiple columns", return:
 {{"action": "delete_columns", "columns": [...]}}
 
+MOVE MULTIPLE COLUMNS:
+{{"action": "move_columns", "columns": ["Name", "Branch", "CGPA"], "new_position": 0}}
+
+If user says "move columns A, B, C to front / position X" → return
+{{"action": "move_columns", "columns": [...], "new_position": X}}.
 
 
 FILTER:
@@ -439,6 +524,13 @@ def ground_columns(
                 sort_spec["column"] = fuzzy_match_column(
                     sort_spec["column"], actual_columns
                 )
+# MULTI-COLUMN MOVE → Fuzzy match each column
+    if instruction.get("action") == "move_columns":
+        grounded_cols = []
+        for col in instruction["columns"]:
+            grounded_cols.append(fuzzy_match_column(col, actual_columns))
+        instruction["columns"] = grounded_cols
+
     if instruction.get("action") == "delete_columns":
         grounded = []
         for col in instruction["columns"]:
@@ -1375,7 +1467,31 @@ class SheetsAIAgent:
                 "columns": [s["column"] for s in instruction["sort"]],
                 "response": result,
             }
+        elif action == "move_columns":
+            cols = instruction["columns"]
+            new_pos = int(instruction["new_position"])
 
+            # Find original indexes
+            indexes = [headers.index(c) for c in cols]
+
+            # Sort indexes left-to-right to preserve correct shifting
+            for i, old_index in enumerate(indexes):
+                target = new_pos + i
+                try:
+                    move_column(self.service, spreadsheet_id, sheet_id, old_index, target)
+                except HttpError as err:
+                    if "merged cell" in str(err):
+                        unmerge_all(self.service, spreadsheet_id, sheet_id)
+                        move_column(self.service, spreadsheet_id, sheet_id, old_index, target)
+                    else:
+                        raise err
+
+            return {
+                "status": "success",
+                "action": "move_columns",
+                "columns": cols,
+                "new_position": new_pos
+            }
         # FILTER
         elif action == "filter":
             col_idx = headers.index(instruction["column"])
