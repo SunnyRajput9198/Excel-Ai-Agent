@@ -25,7 +25,7 @@ Type anything like:
 - “Color range A2:C10 lightblue”
 
 The agent converts your instruction into structured JSON using Gemini and performs the corresponding API operations.
-
+   
 ---
 
 ## 🎯 Supported Operations
