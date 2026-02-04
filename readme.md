@@ -4,7 +4,7 @@ An AI-powered assistant that performs **automatic operations on Google Sheets an
 
 This project uses:
 
-- **FastAPI**  for backend API  
+- **FastAPI**  for backend API    
 - **Google Sheets API v4**  
 - **Gemini 2.0 Flash** LLM  
 - **Python automation** for sheet operations (sorting, filtering, coloring, deleting rows, formulas)
