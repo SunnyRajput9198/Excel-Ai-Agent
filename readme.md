@@ -7,7 +7,7 @@ This project uses:
 
 
 - **FastAPI**  for backend API    
-- **Google Sheets API v4**  
+- **Google Sheets API v4**
 - **Gemini 2.0 Flash** LLM  
 - **Python automation** for sheet operations (sorting, filtering, coloring, deleting rows, formulas)
 
