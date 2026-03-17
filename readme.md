@@ -20,6 +20,7 @@ Type anything like:
 
 - “Sort by CGPA descending”
 - “Delete rows where Package < 5”
+- 
 - “Remove duplicates from Roll No”
 - “Add formula in Total column”
 - “Color rows where Category = General pink”
