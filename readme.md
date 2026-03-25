@@ -1,6 +1,3 @@
-
-
- 
 # 📊 Google Sheets AI Agent
 
 An AI-powered assistant that performs **automatic operations on Google Sheets and Excel files** using natural language instructions.
